@@ -1,0 +1,57 @@
+name: Build libvoicefx.so
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+          add-to-path: true
+
+      - name: Build with ndk-build
+        run: |
+          cd jni
+          ndk-build NDK_PROJECT_PATH=. NDK_APPLICATION_MK=Application.mk -j4
+
+      - name: Collect output
+        run: |
+          mkdir -p output
+          find libs -name "*.so" -exec cp {} output/ \;
+          ls -lh output/
+
+      - name: Upload armeabi-v7a artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libvoicefx-armeabi-v7a
+          path: libs/armeabi-v7a/libvoicefx.so
+
+      - name: Upload arm64-v8a artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libvoicefx-arm64-v8a
+          path: libs/arm64-v8a/libvoicefx.so
+
+      - name: Create Release (on push to main)
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Build #${{ github.run_number }}"
+          files: |
+            libs/armeabi-v7a/libvoicefx.so
+            libs/arm64-v8a/libvoicefx.so
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
