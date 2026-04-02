@@ -1,15 +1,12 @@
 #include <android/log.h>
-#include <stdint.h>
-#include <string.h>
-#include <stdlib.h>
-#include <math.h>
+#include <stdio.h>
 #include <dlfcn.h>
+#include <stdint.h>
 
-#define LOG_TAG "VoiceFX"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "VoiceFX", __VA_ARGS__)
 
 // ============================================================
-// STRUKTUR WAJIB AML
+// STRUCT AML
 // ============================================================
 struct ModInfo {
     const char* id;
@@ -25,26 +22,38 @@ struct IAML {
 };
 
 // ============================================================
-// DEKLARASI MODULE
+// MOD INFO
 // ============================================================
 static ModInfo g_modinfo("com.burhan.voicefx", "VoiceFX", "1.0", "Burhan");
-ModInfo* modinfo = &g_modinfo;
 
-extern "C" __attribute__((visibility("default"))) ModInfo* __GetModInfo() {
-    return modinfo;
+// --- WAJIB PAKAI extern "C" ---
+extern "C" void* __GetModInfo() {
+    return &g_modinfo;
 }
 
 // ============================================================
-// VARIABLE GLOBAL
+// FUNGSI WAJIB KEDUA
 // ============================================================
-static void*   (*pDobbySymbolResolver)(const char*, const char*) = nullptr;
-static int     (*pDobbyHook)(void*, void*, void**) = nullptr;
+extern "C" void OnModPreLoad() {
+    // Log awal
+    FILE* f = fopen("/sdcard/aml_log.txt", "w");
+    if(f) {
+        fprintf(f, "OnModPreLoad CALLED!\n");
+        fclose(f);
+    }
+    LOGI("OnModPreLoad done");
+}
 
+// ============================================================
+// TYPEDEFS & AUDIO
+// ============================================================
 typedef unsigned int DWORD;
 typedef unsigned int HRECORD;
 typedef void* HDSP;
 typedef void (*DSPPROC)(HDSP, DWORD, void*, DWORD, void*);
 
+static void*   (*pDobbySymbolResolver)(const char*, const char*) = nullptr;
+static int     (*pDobbyHook)(void*, void*, void**) = nullptr;
 static HDSP    (*pBASS_ChannelSetDSP)(HRECORD, DSPPROC, void*, int) = nullptr;
 static HRECORD (*orig_BASS_RecordStart)(DWORD, DWORD, DWORD, void*, void*) = nullptr;
 
@@ -57,9 +66,6 @@ static struct {
     float  ovl[256];
 } g_vfx = {1.0f, 0, {0}, 0, 0, {0}};
 
-// ============================================================
-// AUDIO
-// ============================================================
 static inline float hann(int i, int n) {
     return 0.5f * (1.0f - cosf(6.283185307f * i / (n - 1)));
 }
@@ -106,29 +112,17 @@ extern "C" {
 }
 
 // ============================================================
-// ENTRY POINT
+// ON MOD LOAD
 // ============================================================
-extern "C" __attribute__((visibility("default"))) void OnModLoad() {
-    // ==============================================
-    // LANGSUNG CETAK LOG & TOAST PALING DEPAN
-    // ==============================================
-    LOGI("=== VOICEFX START ===");
-    
-    // BUAT FILE LOG
-    FILE* ff = fopen("/sdcard/voicefx_log.txt", "w");
-    if(ff) {
-        fprintf(ff, "OnModLoad CALLED!\n");
-        fclose(ff);
-    }
+extern "C" void OnModLoad() {
+    LOGI("=== OnModLoad START ===");
 
-    // CARI AML INTERFACE
     void* (*GetInterface)(const char*) = (void*(*)(const char*))dlsym(RTLD_DEFAULT, "GetInterface");
     if(!GetInterface) return;
 
     IAML* aml = (IAML*)GetInterface("AMLInterface");
     if(!aml) return;
 
-    // TOAST PERTAMA KALI
     aml->ShowToast(true, "VoiceFX Loaded!");
 
     // CARI DOBBY
@@ -140,7 +134,6 @@ extern "C" __attribute__((visibility("default"))) void OnModLoad() {
         return;
     }
 
-    // CARI BASS
     void* hBASS = dlopen("libBASS.so", RTLD_NOW | RTLD_GLOBAL);
     if(!hBASS) {
         aml->ShowToast(true, "BASS not found");
