@@ -8,11 +8,6 @@
 #define LOG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "VoiceFX", fmt, ##__VA_ARGS__)
 
 // ============================================================
-// DEKLARASI FUNGSI AML (YANG SUDAH ADA DI GAME)
-// ============================================================
-extern "C" void* GetInterface(const char* name);
-
-// ============================================================
 // STRUCT AML
 // ============================================================
 struct ModInfo {
@@ -67,7 +62,7 @@ static inline short clamp16(float v) {
 }
 
 static void dspCallback(HDSP dsp, DWORD chan, void* buf, DWORD len, void* u) {
-    if (!g_vfx.enabled || g_vfx.pitch == 1.0f) return;
+    if (!g_vfx.enabled || g_vfx.pitch == 1.0) return;
     short* s = (short*)buf;
     int n = len / 2;
 
@@ -114,6 +109,11 @@ extern "C" {
 // ENTRY POINT
 // ============================================================
 extern "C" __attribute__((visibility("default"))) void OnModLoad() {
+    // CARI INTERFACE AML PAKAI dlsym
+    void* (*GetInterface)(const char*) = (void*(*)(const char*))dlsym(RTLD_DEFAULT, "GetInterface");
+    
+    if (!GetInterface) return;
+    
     aml = (IAML*)GetInterface("AMLInterface");
     if(!aml) return;
 
