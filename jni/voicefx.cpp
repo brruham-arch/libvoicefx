@@ -8,11 +8,13 @@
 #define LOG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "VoiceFX", fmt, ##__VA_ARGS__)
 
 // ============================================================
-// DEKLARASI SENDIRI AML INTERFACE (TIDAK BUTUH HEADER)
+// DEKLARASI FUNGSI AML (YANG SUDAH ADA DI GAME)
 // ============================================================
-typedef void* (*GetInterface_t)(const char* name);
 extern "C" void* GetInterface(const char* name);
 
+// ============================================================
+// STRUCT AML
+// ============================================================
 struct ModInfo {
     const char* id;
     const char* name;
