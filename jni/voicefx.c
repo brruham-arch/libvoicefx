@@ -1,8 +1,3 @@
-/**
- * voicefx.c - AML Mod Voice Changer
- * Using RTLD_DEFAULT for Dobby (already in game memory)
- */
-
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
@@ -14,22 +9,26 @@
 #define LOG_TAG "libvoicefx"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 
+// LOG LANGSUNG DI ROOT SD CARD
+#define LOGFILE "/sdcard/voicefx_log.txt"
+
 static void writeLog(const char* msg) {
-    FILE* f = fopen("/sdcard/voicefx_log.txt", "a");
+    FILE* f = fopen(LOGFILE, "a");
     if (f) { fprintf(f, "%s\n", msg); fclose(f); }
 }
 
 typedef unsigned int DWORD;
 typedef unsigned int HRECORD;
 typedef unsigned int HDSP;
-typedef void (*DSPPROC)(HDSP, DWORD, void*, DWORD, void*);
+typedef void (*DSPPROC)(void*, DWORD, void*, DWORD, void*);
 
-// Function pointers
+// FUNCTION POINTERS
 static void*   (*pDobbySymbolResolver)(const char*, const char*) = NULL;
 static int     (*pDobbyHook)(void*, void*, void**) = NULL;
 static HDSP    (*pBASS_ChannelSetDSP)(HRECORD, DSPPROC, void*, int) = NULL;
 static HRECORD (*orig_BASS_RecordStart)(DWORD, DWORD, DWORD, void*, void*) = NULL;
 
+// AUDIO BUFFER
 static struct {
     float  pitch;
     int    enabled;
@@ -46,7 +45,7 @@ static inline short clamp16(float v) {
     return v > 32767 ? 32767 : (v < -32768 ? -32768 : (short)v);
 }
 
-static void dspCallback(HDSP dsp, DWORD chan, void* buf, DWORD len, void* u) {
+static void dspCallback(void* dsp, DWORD chan, void* buf, DWORD len, void* u) {
     if (!g_vfx.enabled || g_vfx.pitch == 1.0f) return;
     short* s = (short*)buf;
     int n = len / 2;
@@ -71,11 +70,12 @@ static void dspCallback(HDSP dsp, DWORD chan, void* buf, DWORD len, void* u) {
 
 static HRECORD hook_BASS_RecordStart(DWORD freq, DWORD chans, DWORD flags, void* proc, void* user) {
     HRECORD h = orig_BASS_RecordStart(freq, chans, flags, proc, user);
-    writeLog("[VFX] BASS_RecordStart HOOKED");
+    writeLog("[VFX] BASS HOOKED");
     pBASS_ChannelSetDSP(h, dspCallback, NULL, 1);
     return h;
 }
 
+// API UNTUK LUA
 void vc_set_pitch(float f) {
     if (f < 0.25f) f = 0.25f;
     if (f > 4.0f)  f = 4.0f;
@@ -87,54 +87,40 @@ int  vc_is_enabled(void) { return g_vfx.enabled; }
 float vc_get_pitch(void) { return g_vfx.pitch; }
 
 // ============================================================
-// INIT
+// ENTRY POINT - NAMA FUNGSI WAJIB OnModLoad
 // ============================================================
-void Init_Mod(void) {
-    remove("/sdcard/voicefx_log.txt");
+void OnModLoad(void) {
+    remove(LOGFILE);
     writeLog("=========================");
-    writeLog("   LIB VOICEFX START    ");
+    writeLog("   VOICEFX LOADED!      ");
     writeLog("=========================");
 
-    // === CARI DOBBY LANGSUNG DARI MEMORI GAME ===
+    // CARI DOBBY DARI MEMORY
     pDobbySymbolResolver = (void*(*)(const char*,const char*))dlsym(RTLD_DEFAULT, "DobbySymbolResolver");
     pDobbyHook           = (int(*)(void*,void*,void**))dlsym(RTLD_DEFAULT, "DobbyHook");
 
     if (!pDobbySymbolResolver || !pDobbyHook) {
-        writeLog("[X] Dobby functions NOT FOUND in memory!");
+        writeLog("[ERROR] DOBBY NOT FOUND");
         return;
     }
-    writeLog("[✓] Dobby FOUND in game memory");
+    writeLog("[OK] DOBBY FOUND");
 
-    // === CARI BASS ===
-    void* bobj = dlopen("libBASS.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!bobj) {
-        writeLog("[X] libBASS.so NOT FOUND");
+    // CARI BASS
+    void* hBASS = dlopen("libBASS.so", RTLD_NOW | RTLD_GLOBAL);
+    if (!hBASS) {
+        writeLog("[ERROR] BASS NOT FOUND");
         return;
     }
-    writeLog("[✓] libBASS.so OK");
+    writeLog("[OK] BASS found");
 
-    pBASS_ChannelSetDSP = (HDSP(*)(HRECORD,DSPPROC,void*,int))dlsym(bobj, "BASS_ChannelSetDSP");
+    pBASS_ChannelSetDSP = (HDSP(*)(HRECORD,DSPPROC,void*,int))dlsym(hBASS, "BASS_ChannelSetDSP");
 
     void* addr = pDobbySymbolResolver("libBASS.so", "BASS_RecordStart");
     if (!addr) {
-        writeLog("[X] BASS_RecordStart NOT FOUND");
+        writeLog("[ERROR] BASS_RecordStart NOT FOUND");
         return;
     }
-    writeLog("[✓] Symbol BASS_RecordStart FOUND");
 
     pDobbyHook(addr, (void*)hook_BASS_RecordStart, (void**)&orig_BASS_RecordStart);
-    writeLog("[✓] HOOK SUCCESS! READY");
-}
-
-// ============================================================
-// ENTRY POINTS
-// ============================================================
-void OnModLoad(void) { Init_Mod(); }
-
-__attribute__((constructor)) void init_ctor() { Init_Mod(); }
-
-#include <jni.h>
-jint JNI_OnLoad(JavaVM* vm, void* reserved) {
-    Init_Mod();
-    return JNI_VERSION_1_6;
+    writeLog("[SUCCESS] HOOKED!");
 }
