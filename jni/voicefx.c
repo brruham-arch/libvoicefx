@@ -141,7 +141,7 @@ float vc_get_pitch(void)  { return g_vfx.pitch_factor; }
 // ============================================================
 // AML ENTRY POINT
 // ============================================================
-void OnModLoad(void) {
+void __attribute__((constructor)) OnModLoad(void) {
     // Hapus log lama
     remove(LOGFILE);
     logfile("[VFX] OnModLoad dipanggil!");
