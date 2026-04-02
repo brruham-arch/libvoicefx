@@ -1,6 +1,6 @@
 /**
  * voicefx.c - AML Voice FX Mod untuk SA-MP Android
- * Entry point: OnModLoad (format AML)
+ * Entry point: __attribute__((constructor)) + JNI_OnLoad
  */
 
 #include <stdint.h>
@@ -15,8 +15,8 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// Tulis juga ke file agar bisa dibaca dari Lua
-#define LOGFILE "/storage/emulated/0/voicefx_log.txt"
+// Ubah path ke folder yang pasti bisa write
+#define LOGFILE "/sdcard/Android/data/com.sampmobilerp.game/files/voicefx_log.txt"
 static void logfile(const char* msg) {
     FILE* f = fopen(LOGFILE, "a");
     if (f) { fprintf(f, "%s\n", msg); fclose(f); }
@@ -127,22 +127,21 @@ static HRECORD hook_BASSRecordStart(DWORD freq, DWORD chans, DWORD flags, void* 
 // ============================================================
 // PUBLIC API
 // ============================================================
-void  vc_set_pitch(float factor) {
+void vc_set_pitch(float factor) {
     if (factor < 0.25f) factor = 0.25f;
     if (factor > 4.0f)  factor = 4.0f;
     g_vfx.pitch_factor = factor;
     LOGI("pitch set to %.2f", factor);
 }
-void  vc_enable(void)     { g_vfx.enabled = 1; LOGI("enabled"); }
-void  vc_disable(void)    { g_vfx.enabled = 0; LOGI("disabled"); }
-int   vc_is_enabled(void) { return g_vfx.enabled; }
-float vc_get_pitch(void)  { return g_vfx.pitch_factor; }
+void vc_enable(void)     { g_vfx.enabled = 1; LOGI("enabled"); }
+void vc_disable(void)    { g_vfx.enabled = 0; LOGI("disabled"); }
+int  vc_is_enabled(void) { return g_vfx.enabled; }
+float vc_get_pitch(void) { return g_vfx.pitch_factor; }
 
 // ============================================================
 // AML ENTRY POINT
 // ============================================================
 void __attribute__((constructor)) OnModLoad(void) {
-    // Hapus log lama
     remove(LOGFILE);
     logfile("[VFX] OnModLoad dipanggil!");
     LOGI("OnModLoad called");
@@ -188,10 +187,16 @@ void __attribute__((constructor)) OnModLoad(void) {
     }
     logfile("[VFX] Hook BASS_RecordStart OK!");
 
-    memset(&g_vfx, 0, sizeof(VoiceFX));
     g_vfx.pitch_factor = 1.0f;
     g_vfx.enabled      = 0;
 
     logfile("[VFX] OnModLoad selesai - siap!");
     LOGI("OnModLoad done");
+}
+
+// Tambahan untuk jaminan load
+#include <jni.h>
+jint JNI_OnLoad(JavaVM* vm, void* reserved) {
+    OnModLoad();
+    return JNI_VERSION_1_6;
 }
