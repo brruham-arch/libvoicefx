@@ -23,8 +23,7 @@ jobs:
 
       - name: Build with ndk-build
         run: |
-          cd jni
-          ndk-build NDK_PROJECT_PATH=. NDK_APPLICATION_MK=Application.mk -j4
+          ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk NDK_APPLICATION_MK=jni/Application.mk -j4
 
       - name: Collect output
         run: |
@@ -44,7 +43,7 @@ jobs:
           name: libvoicefx-arm64-v8a
           path: libs/arm64-v8a/libvoicefx.so
 
-      - name: Create Release (on push to main)
+      - name: Create Release
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: softprops/action-gh-release@v2
         with:
