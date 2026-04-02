@@ -1,3 +1,8 @@
+/**
+ * voicefx.c - AML Mod Voice Changer
+ * Using RTLD_DEFAULT for Dobby (already in game memory)
+ */
+
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
@@ -19,6 +24,7 @@ typedef unsigned int HRECORD;
 typedef unsigned int HDSP;
 typedef void (*DSPPROC)(HDSP, DWORD, void*, DWORD, void*);
 
+// Function pointers
 static void*   (*pDobbySymbolResolver)(const char*, const char*) = NULL;
 static int     (*pDobbyHook)(void*, void*, void**) = NULL;
 static HDSP    (*pBASS_ChannelSetDSP)(HRECORD, DSPPROC, void*, int) = NULL;
@@ -65,7 +71,7 @@ static void dspCallback(HDSP dsp, DWORD chan, void* buf, DWORD len, void* u) {
 
 static HRECORD hook_BASS_RecordStart(DWORD freq, DWORD chans, DWORD flags, void* proc, void* user) {
     HRECORD h = orig_BASS_RecordStart(freq, chans, flags, proc, user);
-    writeLog("[VFX] BASS Hooked");
+    writeLog("[VFX] BASS_RecordStart HOOKED");
     pBASS_ChannelSetDSP(h, dspCallback, NULL, 1);
     return h;
 }
@@ -81,7 +87,7 @@ int  vc_is_enabled(void) { return g_vfx.enabled; }
 float vc_get_pitch(void) { return g_vfx.pitch; }
 
 // ============================================================
-// KODE INTI YANG DIJALANKAN
+// INIT
 // ============================================================
 void Init_Mod(void) {
     remove("/sdcard/voicefx_log.txt");
@@ -89,41 +95,44 @@ void Init_Mod(void) {
     writeLog("   LIB VOICEFX START    ");
     writeLog("=========================");
 
-    void* dobj = dlopen("libdobby.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!dobj) { writeLog("ERR: libdobby.so"); return; }
-    writeLog("OK: libdobby.so");
+    // === CARI DOBBY LANGSUNG DARI MEMORI GAME ===
+    pDobbySymbolResolver = (void*(*)(const char*,const char*))dlsym(RTLD_DEFAULT, "DobbySymbolResolver");
+    pDobbyHook           = (int(*)(void*,void*,void**))dlsym(RTLD_DEFAULT, "DobbyHook");
 
-    pDobbySymbolResolver = (void*(*)(const char*,const char*))dlsym(dobj, "DobbySymbolResolver");
-    pDobbyHook           = (int(*)(void*,void*,void**))dlsym(dobj, "DobbyHook");
+    if (!pDobbySymbolResolver || !pDobbyHook) {
+        writeLog("[X] Dobby functions NOT FOUND in memory!");
+        return;
+    }
+    writeLog("[✓] Dobby FOUND in game memory");
 
+    // === CARI BASS ===
     void* bobj = dlopen("libBASS.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!bobj) { writeLog("ERR: libBASS.so"); return; }
-    writeLog("OK: libBASS.so");
+    if (!bobj) {
+        writeLog("[X] libBASS.so NOT FOUND");
+        return;
+    }
+    writeLog("[✓] libBASS.so OK");
 
     pBASS_ChannelSetDSP = (HDSP(*)(HRECORD,DSPPROC,void*,int))dlsym(bobj, "BASS_ChannelSetDSP");
 
     void* addr = pDobbySymbolResolver("libBASS.so", "BASS_RecordStart");
-    if (!addr) { writeLog("ERR: Symbol not found"); return; }
+    if (!addr) {
+        writeLog("[X] BASS_RecordStart NOT FOUND");
+        return;
+    }
+    writeLog("[✓] Symbol BASS_RecordStart FOUND");
 
     pDobbyHook(addr, (void*)hook_BASS_RecordStart, (void**)&orig_BASS_RecordStart);
-    writeLog("HOOK SUCCESS!");
+    writeLog("[✓] HOOK SUCCESS! READY");
 }
 
 // ============================================================
-// SEMUA JENIS ENTRY POINT - AGAR PASTI KETANGKAP
+// ENTRY POINTS
 // ============================================================
+void OnModLoad(void) { Init_Mod(); }
 
-// Cara 1: Constructor attribute
-__attribute__((constructor)) void init_ctor() {
-    Init_Mod();
-}
+__attribute__((constructor)) void init_ctor() { Init_Mod(); }
 
-// Cara 2: OnModLoad (standar AML)
-void OnModLoad() {
-    Init_Mod();
-}
-
-// Cara 3: JNI_OnLoad
 #include <jni.h>
 jint JNI_OnLoad(JavaVM* vm, void* reserved) {
     Init_Mod();
