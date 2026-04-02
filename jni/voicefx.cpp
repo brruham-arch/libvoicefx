@@ -5,10 +5,11 @@
 #include <math.h>
 #include <dlfcn.h>
 
-#define LOG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "VoiceFX", fmt, ##__VA_ARGS__)
+#define LOG_TAG "VoiceFX"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
 // ============================================================
-// STRUCT AML
+// STRUKTUR WAJIB AML
 // ============================================================
 struct ModInfo {
     const char* id;
@@ -24,24 +25,26 @@ struct IAML {
 };
 
 // ============================================================
-// MOD INFO
+// DEKLARASI MODULE
 // ============================================================
 static ModInfo g_modinfo("com.burhan.voicefx", "VoiceFX", "1.0", "Burhan");
 ModInfo* modinfo = &g_modinfo;
-IAML* aml = nullptr;
 
-extern "C" __attribute__((visibility("default"))) ModInfo* __GetModInfo() { return modinfo; }
+extern "C" __attribute__((visibility("default"))) ModInfo* __GetModInfo() {
+    return modinfo;
+}
 
 // ============================================================
-// TYPEDEFS HOOK & AUDIO
+// VARIABLE GLOBAL
 // ============================================================
+static void*   (*pDobbySymbolResolver)(const char*, const char*) = nullptr;
+static int     (*pDobbyHook)(void*, void*, void**) = nullptr;
+
 typedef unsigned int DWORD;
 typedef unsigned int HRECORD;
 typedef void* HDSP;
 typedef void (*DSPPROC)(HDSP, DWORD, void*, DWORD, void*);
 
-static void*   (*pDobbySymbolResolver)(const char*, const char*) = nullptr;
-static int     (*pDobbyHook)(void*, void*, void**) = nullptr;
 static HDSP    (*pBASS_ChannelSetDSP)(HRECORD, DSPPROC, void*, int) = nullptr;
 static HRECORD (*orig_BASS_RecordStart)(DWORD, DWORD, DWORD, void*, void*) = nullptr;
 
@@ -54,6 +57,9 @@ static struct {
     float  ovl[256];
 } g_vfx = {1.0f, 0, {0}, 0, 0, {0}};
 
+// ============================================================
+// AUDIO
+// ============================================================
 static inline float hann(int i, int n) {
     return 0.5f * (1.0f - cosf(6.283185307f * i / (n - 1)));
 }
@@ -61,8 +67,8 @@ static inline short clamp16(float v) {
     return v > 32767 ? 32767 : (v < -32768 ? -32768 : (short)v);
 }
 
-static void dspCallback(HDSP dsp, DWORD chan, void* buf, DWORD len, void* u) {
-    if (!g_vfx.enabled || g_vfx.pitch == 1.0) return;
+static void dspCallback(HDSP, DWORD, void* buf, DWORD len, void*) {
+    if (!g_vfx.enabled || g_vfx.pitch == 1.0f) return;
     short* s = (short*)buf;
     int n = len / 2;
 
@@ -86,65 +92,69 @@ static void dspCallback(HDSP dsp, DWORD chan, void* buf, DWORD len, void* u) {
 
 static HRECORD hook_BASS_RecordStart(DWORD freq, DWORD chans, DWORD flags, void* proc, void* user) {
     HRECORD h = orig_BASS_RecordStart(freq, chans, flags, proc, user);
-    pBASS_ChannelSetDSP(h, (DSPPROC)dspCallback, nullptr, 1);
+    pBASS_ChannelSetDSP(h, dspCallback, nullptr, 1);
     return h;
 }
 
 // ============================================================
-// API UNTUK LUA
+// API
 // ============================================================
 extern "C" {
-    void vc_set_pitch(float f) {
-        if (f < 0.25f) f = 0.25f;
-        if (f > 4.0f)  f = 4.0f;
-        g_vfx.pitch = f;
-    }
-    void vc_enable(void)  { g_vfx.enabled = 1; }
-    void vc_disable(void) { g_vfx.enabled = 0; }
-    int  vc_is_enabled(void) { return g_vfx.enabled; }
-    float vc_get_pitch(void) { return g_vfx.pitch; }
+    void vc_set_pitch(float f) { if(f<0.25f)f=0.25f; if(f>4.0f)f=4.0f; g_vfx.pitch=f; }
+    void vc_enable(void)  { g_vfx.enabled=1; }
+    void vc_disable(void) { g_vfx.enabled=0; }
 }
 
 // ============================================================
 // ENTRY POINT
 // ============================================================
 extern "C" __attribute__((visibility("default"))) void OnModLoad() {
-    // CARI INTERFACE AML PAKAI dlsym
+    // ==============================================
+    // LANGSUNG CETAK LOG & TOAST PALING DEPAN
+    // ==============================================
+    LOGI("=== VOICEFX START ===");
+    
+    // BUAT FILE LOG
+    FILE* ff = fopen("/sdcard/voicefx_log.txt", "w");
+    if(ff) {
+        fprintf(ff, "OnModLoad CALLED!\n");
+        fclose(ff);
+    }
+
+    // CARI AML INTERFACE
     void* (*GetInterface)(const char*) = (void*(*)(const char*))dlsym(RTLD_DEFAULT, "GetInterface");
-    
-    if (!GetInterface) return;
-    
-    aml = (IAML*)GetInterface("AMLInterface");
+    if(!GetInterface) return;
+
+    IAML* aml = (IAML*)GetInterface("AMLInterface");
     if(!aml) return;
 
+    // TOAST PERTAMA KALI
     aml->ShowToast(true, "VoiceFX Loaded!");
-    LOG("=== VoiceFX Loaded ===");
 
     // CARI DOBBY
     pDobbySymbolResolver = (void*(*)(const char*,const char*))dlsym(RTLD_DEFAULT, "DobbySymbolResolver");
     pDobbyHook           = (int(*)(void*,void*,void**))dlsym(RTLD_DEFAULT, "DobbyHook");
 
-    if (!pDobbySymbolResolver || !pDobbyHook) {
+    if(!pDobbyHook) {
         aml->ShowToast(true, "Dobby not found");
         return;
     }
 
     // CARI BASS
     void* hBASS = dlopen("libBASS.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!hBASS) {
-        aml->ShowToast(true, "libBASS not found");
+    if(!hBASS) {
+        aml->ShowToast(true, "BASS not found");
         return;
     }
 
     pBASS_ChannelSetDSP = (HDSP(*)(HRECORD,DSPPROC,void*,int))dlsym(hBASS, "BASS_ChannelSetDSP");
-
     void* addr = pDobbySymbolResolver("libBASS.so", "BASS_RecordStart");
-    if (!addr) {
+
+    if(!addr) {
         aml->ShowToast(true, "Func not found");
         return;
     }
 
-    // HOOK (CAST KE void*)
     pDobbyHook(addr, (void*)hook_BASS_RecordStart, (void**)&orig_BASS_RecordStart);
     aml->ShowToast(true, "Hook Success!");
 }
