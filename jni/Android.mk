@@ -5,7 +5,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE    := voicefx
 LOCAL_SRC_FILES := voicefx.cpp
 LOCAL_CPPFLAGS  := -std=c++17 -fPIC
-LOCAL_CFLAGS    := -Wall
-LOCAL_LDLIBS    := -lm -llog -ldl -Wl,--export-all-symbols
+LOCAL_CFLAGS    := -Wall -fvisibility=default
+LOCAL_LDLIBS    := -lm -llog -ldl
 
 include $(BUILD_SHARED_LIBRARY)
