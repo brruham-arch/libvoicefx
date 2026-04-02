@@ -16,19 +16,15 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 // ============================================================
-// DEBUG TOOLS - AKAN MUNCUL DI LAYAR
+// DEBUG - Write to Log File
 // ============================================================
-static void showToast(const char* text) {
-    FILE* p = popen("am broadcast -a android.intent.action.BOOT_COMPLETED --es text \""(text)"\"", "w");
-    if (p) pclose(p);
-}
-
-static void printToChat(const char* msg) {
+static void printDebug(const char* msg) {
     LOGI("%s", msg);
-    showToast(msg);
-    
     FILE* f = fopen("/sdcard/voicefx_log.txt", "a");
-    if (f) { fprintf(f, "%s\n", msg); fclose(f); }
+    if (f) {
+        fprintf(f, "%s\n", msg);
+        fclose(f);
+    }
 }
 
 // ============================================================
@@ -88,7 +84,7 @@ static void dspCallback(HDSP dsp, DWORD chan, void* buf, DWORD len, void* u) {
 
 static HRECORD hook_BASS_RecordStart(DWORD freq, DWORD chans, DWORD flags, void* proc, void* user) {
     HRECORD h = orig_BASS_RecordStart(freq, chans, flags, proc, user);
-    printToChat("[VFX] BASS_RecordStart HOOKED");
+    printDebug("[VFX] BASS_RecordStart HOOKED");
     pBASS_ChannelSetDSP(h, dspCallback, NULL, 1);
     return h;
 }
@@ -101,8 +97,8 @@ void vc_set_pitch(float f) {
     if (f > 4.0f)  f = 4.0f;
     g_vfx.pitch = f;
 }
-void vc_enable(void)  { g_vfx.enabled = 1; printToChat("[VFX] ENABLED"); }
-void vc_disable(void) { g_vfx.enabled = 0; printToChat("[VFX] DISABLED"); }
+void vc_enable(void)  { g_vfx.enabled = 1; printDebug("[VFX] ENABLED"); }
+void vc_disable(void) { g_vfx.enabled = 0; printDebug("[VFX] DISABLED"); }
 int  vc_is_enabled(void) { return g_vfx.enabled; }
 float vc_get_pitch(void) { return g_vfx.pitch; }
 
@@ -111,42 +107,41 @@ float vc_get_pitch(void) { return g_vfx.pitch; }
 // ============================================================
 void OnModLoad(void) {
     remove("/sdcard/voicefx_log.txt");
-    printToChat("");
-    printToChat("=========================");
-    printToChat("   LIB VOICEFX LOADED   ");
-    printToChat("=========================");
+    printDebug("=========================");
+    printDebug("   LIB VOICEFX LOADED   ");
+    printDebug("=========================");
 
     void* dobj = dlopen("libdobby.so", RTLD_NOW | RTLD_GLOBAL);
     if (!dobj) {
-        printToChat("[X] libdobby.so NOT FOUND");
+        printDebug("[X] libdobby.so NOT FOUND");
         return;
     }
-    printToChat("[✓] libdobby.so OK");
+    printDebug("[✓] libdobby.so OK");
 
     pDobbySymbolResolver = (void*(*)(const char*,const char*))dlsym(dobj, "DobbySymbolResolver");
     pDobbyHook           = (int(*)(void*,void*,void**))dlsym(dobj, "DobbyHook");
 
     void* bobj = dlopen("libBASS.so", RTLD_NOW | RTLD_GLOBAL);
     if (!bobj) {
-        printToChat("[X] libBASS.so NOT FOUND");
+        printDebug("[X] libBASS.so NOT FOUND");
         return;
     }
-    printToChat("[✓] libBASS.so OK");
+    printDebug("[✓] libBASS.so OK");
 
     pBASS_ChannelSetDSP = (HDSP(*)(HRECORD,DSPPROC,void*,int))dlsym(bobj, "BASS_ChannelSetDSP");
 
     void* addr = pDobbySymbolResolver("libBASS.so", "BASS_RecordStart");
     if (!addr) {
-        printToChat("[X] BASS_RecordStart NOT FOUND");
+        printDebug("[X] BASS_RecordStart NOT FOUND");
         return;
     }
-    printToChat("[✓] Symbol BASS_RecordStart FOUND");
+    printDebug("[✓] Symbol BASS_RecordStart FOUND");
 
     int ret = pDobbyHook(addr, (void*)hook_BASS_RecordStart, (void**)&orig_BASS_RecordStart);
     if (ret != 0) {
-        printToChat("[X] HOOK FAILED");
+        printDebug("[X] HOOK FAILED");
         return;
     }
-    printToChat("[✓] HOOK SUCCESS! READY");
-    printToChat("=========================");
+    printDebug("[✓] HOOK SUCCESS! READY");
+    printDebug("=========================");
 }
