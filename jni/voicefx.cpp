@@ -1,5 +1,3 @@
-#include <mod/amlmod.h>
-#include <mod/iaml.h>
 #include <android/log.h>
 #include <stdint.h>
 #include <string.h>
@@ -9,20 +7,40 @@
 
 #define LOG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "VoiceFX", fmt, ##__VA_ARGS__)
 
-// INFO MODULE
+// ============================================================
+// DEKLARASI SENDIRI AML INTERFACE (TIDAK BUTUH HEADER)
+// ============================================================
+typedef void* (*GetInterface_t)(const char* name);
+extern "C" void* GetInterface(const char* name);
+
+struct ModInfo {
+    const char* id;
+    const char* name;
+    const char* version;
+    const char* author;
+    ModInfo(const char* i, const char* n, const char* v, const char* a)
+        : id(i), name(n), version(v), author(a) {}
+};
+
+struct IAML {
+    virtual void ShowToast(bool, const char*) = 0;
+};
+
+// ============================================================
+// MOD INFO
+// ============================================================
 static ModInfo g_modinfo("com.burhan.voicefx", "VoiceFX", "1.0", "Burhan");
 ModInfo* modinfo = &g_modinfo;
 IAML* aml = nullptr;
 
-// EXPORT INFO
 extern "C" __attribute__((visibility("default"))) ModInfo* __GetModInfo() { return modinfo; }
 
 // ============================================================
-// AUDIO ENGINE
+// TYPEDEFS HOOK & AUDIO
 // ============================================================
 typedef unsigned int DWORD;
 typedef unsigned int HRECORD;
-typedef unsigned int HDSP;
+typedef void* HDSP;
 typedef void (*DSPPROC)(HDSP, DWORD, void*, DWORD, void*);
 
 static void*   (*pDobbySymbolResolver)(const char*, const char*) = nullptr;
@@ -33,7 +51,7 @@ static HRECORD (*orig_BASS_RecordStart)(DWORD, DWORD, DWORD, void*, void*) = nul
 static struct {
     float  pitch;
     int    enabled;
-    short  ring[8192];
+    short  ring[8191];
     int    wpos;
     float  spos;
     float  ovl[256];
@@ -71,7 +89,7 @@ static void dspCallback(HDSP dsp, DWORD chan, void* buf, DWORD len, void* u) {
 
 static HRECORD hook_BASS_RecordStart(DWORD freq, DWORD chans, DWORD flags, void* proc, void* user) {
     HRECORD h = orig_BASS_RecordStart(freq, chans, flags, proc, user);
-    pBASS_ChannelSetDSP(h, dspCallback, NULL, 1);
+    pBASS_ChannelSetDSP(h, (DSPPROC)dspCallback, nullptr, 1);
     return h;
 }
 
@@ -97,7 +115,6 @@ extern "C" __attribute__((visibility("default"))) void OnModLoad() {
     aml = (IAML*)GetInterface("AMLInterface");
     if(!aml) return;
 
-    // TOAST KETIKA LOAD BERHASIL
     aml->ShowToast(true, "VoiceFX Loaded!");
     LOG("=== VoiceFX Loaded ===");
 
@@ -106,26 +123,26 @@ extern "C" __attribute__((visibility("default"))) void OnModLoad() {
     pDobbyHook           = (int(*)(void*,void*,void**))dlsym(RTLD_DEFAULT, "DobbyHook");
 
     if (!pDobbySymbolResolver || !pDobbyHook) {
-        aml->ShowToast(true, "Error: Dobby not found");
+        aml->ShowToast(true, "Dobby not found");
         return;
     }
 
     // CARI BASS
     void* hBASS = dlopen("libBASS.so", RTLD_NOW | RTLD_GLOBAL);
     if (!hBASS) {
-        aml->ShowToast(true, "Error: libBASS not found");
+        aml->ShowToast(true, "libBASS not found");
         return;
     }
 
     pBASS_ChannelSetDSP = (HDSP(*)(HRECORD,DSPPROC,void*,int))dlsym(hBASS, "BASS_ChannelSetDSP");
 
-    void* addr = pDobbySymbolResolver("libBASS.so", "TIDAK-INGAT-NAMA-FUNGSINYA");
+    void* addr = pDobbySymbolResolver("libBASS.so", "BASS_RecordStart");
     if (!addr) {
-        aml->ShowToast(true, "Error: Function not found");
+        aml->ShowToast(true, "Func not found");
         return;
     }
 
     // HOOK (CAST KE void*)
     pDobbyHook(addr, (void*)hook_BASS_RecordStart, (void**)&orig_BASS_RecordStart);
-    aml->ShowToast(true, "Hook Success! Ready");
+    aml->ShowToast(true, "Hook Success!");
 }
