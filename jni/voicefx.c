@@ -1,184 +1,188 @@
 /**
- * voicefx.c - Voice FX Engine for MoNetLoader/SAMP Android
- * Algorithm: TD-PSOLA (Time-Domain Pitch Synchronous Overlap Add)
- * Target: ARM Android (armv7 / arm64)
- * Author: libvoicefx project
+ * voicefx.c - AML Voice FX Mod untuk SA-MP Android
+ * Entry point: OnModLoad (format AML)
+ * Build: arm64-v8a
  */
 
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include <dlfcn.h>
 
 // ============================================================
 // CONFIG
 // ============================================================
-#define MAX_FRAME_SIZE   4096
-#define OVERLAP_SIZE     256
-#define RING_SIZE        8192   // harus power of 2
+#define MAX_SAMPLES  4096
+#define OVERLAP_SIZE 256
+#define RING_SIZE    8192
+
+// ============================================================
+// BASS types
+// ============================================================
+typedef unsigned int HRECORD;
+typedef unsigned int HDSP;
+typedef void (*DSPPROC)(HDSP, DWORD, void*, DWORD, void*);
+#define DWORD unsigned int
 
 // ============================================================
 // STATE
 // ============================================================
 typedef struct {
-    float   pitch_factor;       // 0.5 = turun 1 oktaf, 2.0 = naik 1 oktaf
+    float   pitch_factor;
     int     enabled;
     int     sample_rate;
     int     channels;
-
-    // Ring buffer untuk history audio (hindari putus di batas buffer)
-    int16_t ring[RING_SIZE];
-    int     ring_write;         // posisi tulis saat ini
-    int     ring_read;          // posisi baca synthesis
-
-    // Output buffer overlap-add
-    float   overlap[OVERLAP_SIZE];
-
-    // Synthesis position (float untuk sub-sample accuracy)
+    short   ring[RING_SIZE];
+    int     ring_write;
     float   synth_pos;
-
+    float   overlap[OVERLAP_SIZE];
 } VoiceFX;
 
 static VoiceFX g_vfx = {0};
+static HRECORD g_recHandle = 0;
+static HDSP    g_dspHandle = 0;
+
+// BASS function pointers
+static HDSP (*pBASSChannelSetDSP)(HRECORD, DSPPROC, void*, int) = NULL;
+static int  (*pBASSChannelRemoveDSP)(HRECORD, HDSP) = NULL;
+static HRECORD (*pBASSRecordStart)(DWORD, DWORD, DWORD, void*, void*) = NULL;
+static HRECORD (*orig_BASSRecordStart)(DWORD, DWORD, DWORD, void*, void*) = NULL;
+
+// Dobby
+static void* (*pDobbySymbolResolver)(const char*, const char*) = NULL;
+static int   (*pDobbyHook)(void*, void*, void**) = NULL;
 
 // ============================================================
-// HELPERS
+// AUDIO ENGINE
 // ============================================================
-
-// Hann window untuk smooth overlap-add
-static float hann(int i, int n) {
-    return 0.5f * (1.0f - cosf(2.0f * 3.14159265f * i / (n - 1)));
+static inline float hann(int i, int n) {
+    return 0.5f * (1.0f - cosf(6.28318f * i / (n - 1)));
 }
 
-// Baca dari ring buffer (dengan wrap)
-static inline int16_t ring_get(int pos) {
+static inline short ring_get(int pos) {
     return g_vfx.ring[pos & (RING_SIZE - 1)];
 }
 
-// Tulis ke ring buffer
-static inline void ring_put(int pos, int16_t val) {
-    g_vfx.ring[pos & (RING_SIZE - 1)] = val;
-}
-
-// Clamp float ke int16
-static inline int16_t clamp16(float v) {
+static inline short clamp16(float v) {
     if (v >  32767.0f) return  32767;
     if (v < -32768.0f) return -32768;
-    return (int16_t)v;
+    return (short)v;
 }
 
 // ============================================================
-// PUBLIC API — dipanggil dari Lua via FFI
+// DSP CALLBACK — dipanggil BASS tiap ada audio
 // ============================================================
+static void dspCallback(HDSP dsp, DWORD channel, void* buf, DWORD len, void* user) {
+    if (!g_vfx.enabled || g_vfx.pitch_factor == 1.0f) return;
 
-/**
- * vc_init: inisialisasi engine
- * @sample_rate: biasanya 8000 atau 16000 (SAMP voice)
- * @channels: 1 = mono
- */
-void vc_init(int sample_rate, int channels) {
+    short* s16 = (short*)buf;
+    int n = (int)(len / 2);
+    if (n <= 0 || n > MAX_SAMPLES) return;
+
+    // Tulis ke ring buffer
+    int base = g_vfx.ring_write;
+    for (int i = 0; i < n; i++)
+        g_vfx.ring[(base + i) & (RING_SIZE - 1)] = s16[i];
+    g_vfx.ring_write = base + n;
+
+    // Jaga synth_pos tidak tertinggal terlalu jauh
+    if ((g_vfx.ring_write - (int)g_vfx.synth_pos) > RING_SIZE - 256)
+        g_vfx.synth_pos = (float)(g_vfx.ring_write - n);
+
+    float factor = g_vfx.pitch_factor;
+    float pos    = g_vfx.synth_pos;
+
+    for (int i = 0; i < n; i++) {
+        int   p0   = (int)pos;
+        float frac = pos - p0;
+        float val  = ring_get(p0) * (1.0f - frac) + ring_get(p0 + 1) * frac;
+
+        if (i < OVERLAP_SIZE) {
+            float w = hann(i, OVERLAP_SIZE * 2);
+            val = val * w + g_vfx.overlap[i] * (1.0f - w);
+        }
+
+        s16[i] = clamp16(val);
+        pos += factor;
+    }
+
+    // Simpan overlap untuk frame berikutnya
+    float sp = pos - OVERLAP_SIZE;
+    for (int i = 0; i < OVERLAP_SIZE; i++) {
+        int   p0   = (int)sp;
+        float frac = sp - p0;
+        g_vfx.overlap[i] = ring_get(p0) * (1.0f - frac) + ring_get(p0 + 1) * frac;
+        sp += factor;
+    }
+
+    g_vfx.synth_pos = pos;
+}
+
+// ============================================================
+// HOOK: BASS_RecordStart
+// ============================================================
+static HRECORD hook_BASSRecordStart(DWORD freq, DWORD chans, DWORD flags, void* proc, void* user) {
+    HRECORD handle = orig_BASSRecordStart(freq, chans, flags, proc, user);
+    g_recHandle = handle;
+    g_vfx.sample_rate = freq;
+    g_vfx.channels    = chans;
+
+    // Reset engine dengan sample rate yang benar
     memset(&g_vfx, 0, sizeof(VoiceFX));
-    g_vfx.sample_rate   = sample_rate;
-    g_vfx.pitch_factor  = 1.0f;
-    g_vfx.channels      = channels;
-    g_vfx.synth_pos     = 0.0f;
-    g_vfx.ring_write    = 0;
-    g_vfx.ring_read     = 0;
-    g_vfx.enabled       = 0;
+    g_vfx.pitch_factor = 1.0f;
+    g_vfx.sample_rate  = freq;
+    g_vfx.channels     = chans;
+
+    // Pasang DSP
+    if (pBASSChannelSetDSP) {
+        g_dspHandle = pBASSChannelSetDSP(handle, dspCallback, NULL, 1);
+    }
+
+    return handle;
 }
 
-/**
- * vc_set_pitch: ubah pitch factor
- * @factor: 0.5 = 1 oktaf turun, 1.0 = normal, 2.0 = 1 oktaf naik
- */
+// ============================================================
+// PUBLIC API — dipanggil dari Lua via dlsym
+// ============================================================
 void vc_set_pitch(float factor) {
     if (factor < 0.25f) factor = 0.25f;
     if (factor > 4.0f)  factor = 4.0f;
     g_vfx.pitch_factor = factor;
 }
 
-/**
- * vc_enable / vc_disable
- */
 void vc_enable(void)  { g_vfx.enabled = 1; }
 void vc_disable(void) { g_vfx.enabled = 0; }
-int  vc_is_enabled(void) { return g_vfx.enabled; }
-float vc_get_pitch(void) { return g_vfx.pitch_factor; }
+int  vc_is_enabled(void)  { return g_vfx.enabled; }
+float vc_get_pitch(void)  { return g_vfx.pitch_factor; }
 
-/**
- * vc_process: proses buffer audio in-place
- * @buf: pointer ke buffer int16 (dari BASS DSP callback)
- * @n:   jumlah SAMPLE (bukan byte — sudah dibagi 2)
- *
- * Algoritma:
- *   1. Tulis input ke ring buffer
- *   2. Baca dari ring buffer dengan kecepatan pitch_factor
- *      menggunakan linear interpolation (sub-sample accuracy)
- *   3. Overlap-add dengan Hann window di batas frame
- *   4. Tulis hasil ke buf (in-place)
- */
-void vc_process(int16_t* buf, int n) {
-    if (!g_vfx.enabled || g_vfx.pitch_factor == 1.0f) return;
-    if (n <= 0 || n > MAX_FRAME_SIZE) return;
+// ============================================================
+// AML ENTRY POINT
+// ============================================================
+void OnModLoad(void) {
+    // Load Dobby
+    void* hDobby = dlopen("libdobby.so", RTLD_NOW | RTLD_GLOBAL);
+    if (!hDobby) return;
 
-    VoiceFX* v = &g_vfx;
+    pDobbySymbolResolver = dlsym(hDobby, "DobbySymbolResolver");
+    pDobbyHook           = dlsym(hDobby, "DobbyHook");
+    if (!pDobbySymbolResolver || !pDobbyHook) return;
 
-    // Step 1: Tulis input ke ring buffer
-    int base_write = v->ring_write;
-    for (int i = 0; i < n; i++) {
-        ring_put(base_write + i, buf[i]);
-    }
-    v->ring_write = base_write + n;
+    // Load BASS
+    void* hBASS = dlopen("libBASS.so", RTLD_NOW | RTLD_GLOBAL);
+    if (!hBASS) return;
 
-    // Pastikan synth_pos tidak terlalu jauh di belakang
-    // (hindari wrap-around berlebihan)
-    int available = v->ring_write - (int)v->synth_pos;
-    if (available > RING_SIZE - 256) {
-        // Terlalu jauh tertinggal, skip ke posisi aman
-        v->synth_pos = (float)(v->ring_write - n);
-    }
+    pBASSChannelSetDSP    = dlsym(hBASS, "BASS_ChannelSetDSP");
+    pBASSChannelRemoveDSP = dlsym(hBASS, "BASS_ChannelRemoveDSP");
 
-    // Step 2: Baca dengan pitch_factor (resampling)
-    float factor = v->pitch_factor;
-    float pos    = v->synth_pos;
+    // Hook BASS_RecordStart
+    void* addr = pDobbySymbolResolver("libBASS.so", "BASS_RecordStart");
+    if (!addr) return;
 
-    for (int i = 0; i < n; i++) {
-        // Linear interpolation antar sample
-        int   p0   = (int)pos;
-        float frac = pos - p0;
+    pDobbyHook(addr, (void*)hook_BASSRecordStart, (void**)&orig_BASSRecordStart);
 
-        int16_t s0 = ring_get(p0);
-        int16_t s1 = ring_get(p0 + 1);
-
-        float val = s0 * (1.0f - frac) + s1 * frac;
-
-        // Overlap-add untuk frame boundary smoothing
-        if (i < OVERLAP_SIZE) {
-            float w = hann(i, OVERLAP_SIZE * 2);
-            val = val * w + v->overlap[i] * (1.0f - w);
-        }
-
-        buf[i] = clamp16(val);
-        pos += factor;
-    }
-
-    // Simpan overlap zone untuk frame berikutnya
-    float save_pos = pos - OVERLAP_SIZE;
-    for (int i = 0; i < OVERLAP_SIZE; i++) {
-        int   p0   = (int)save_pos;
-        float frac = save_pos - p0;
-        int16_t s0 = ring_get(p0);
-        int16_t s1 = ring_get(p0 + 1);
-        v->overlap[i] = s0 * (1.0f - frac) + s1 * frac;
-        save_pos += factor;
-    }
-
-    v->synth_pos = pos;
-}
-
-/**
- * vc_destroy: cleanup (opsional, untuk good practice)
- */
-void vc_destroy(void) {
+    // Init engine default
     memset(&g_vfx, 0, sizeof(VoiceFX));
+    g_vfx.pitch_factor = 1.0f;
+    g_vfx.enabled      = 0;
 }
