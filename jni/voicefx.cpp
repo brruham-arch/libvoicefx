@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <dlfcn.h>
 #include <stdint.h>
+#include <math.h> // <<--- TAMBAH INI
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "VoiceFX", __VA_ARGS__)
 
@@ -26,7 +27,6 @@ struct IAML {
 // ============================================================
 static ModInfo g_modinfo("com.burhan.voicefx", "VoiceFX", "1.0", "Burhan");
 
-// --- WAJIB PAKAI extern "C" ---
 extern "C" void* __GetModInfo() {
     return &g_modinfo;
 }
@@ -35,7 +35,6 @@ extern "C" void* __GetModInfo() {
 // FUNGSI WAJIB KEDUA
 // ============================================================
 extern "C" void OnModPreLoad() {
-    // Log awal
     FILE* f = fopen("/sdcard/aml_log.txt", "w");
     if(f) {
         fprintf(f, "OnModPreLoad CALLED!\n");
@@ -125,7 +124,6 @@ extern "C" void OnModLoad() {
 
     aml->ShowToast(true, "VoiceFX Loaded!");
 
-    // CARI DOBBY
     pDobbySymbolResolver = (void*(*)(const char*,const char*))dlsym(RTLD_DEFAULT, "DobbySymbolResolver");
     pDobbyHook           = (int(*)(void*,void*,void**))dlsym(RTLD_DEFAULT, "DobbyHook");
 
