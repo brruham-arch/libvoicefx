@@ -8,6 +8,19 @@
 #include <stdlib.h>
 #include <math.h>
 #include <dlfcn.h>
+#include <android/log.h>
+#include <stdio.h>
+
+#define LOG_TAG "libvoicefx"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+// Tulis juga ke file agar bisa dibaca dari Lua
+#define LOGFILE "/storage/emulated/0/voicefx_log.txt"
+static void logfile(const char* msg) {
+    FILE* f = fopen(LOGFILE, "a");
+    if (f) { fprintf(f, "%s\n", msg); fclose(f); }
+}
 
 #define MAX_SAMPLES  4096
 #define OVERLAP_SIZE 256
@@ -18,9 +31,6 @@ typedef unsigned int HRECORD;
 typedef unsigned int HDSP;
 typedef void (*DSPPROC)(HDSP, DWORD, void*, DWORD, void*);
 
-// ============================================================
-// STATE
-// ============================================================
 typedef struct {
     float  pitch_factor;
     int    enabled;
@@ -36,14 +46,11 @@ static VoiceFX g_vfx = {0};
 static HRECORD g_recHandle = 0;
 static HDSP    g_dspHandle = 0;
 
-// BASS function pointers
 static HDSP    (*pBASSChannelSetDSP)(HRECORD, DSPPROC, void*, int) = NULL;
 static int     (*pBASSChannelRemoveDSP)(HRECORD, HDSP) = NULL;
 static HRECORD (*orig_BASSRecordStart)(DWORD, DWORD, DWORD, void*, void*) = NULL;
-
-// Dobby
-static void* (*pDobbySymbolResolver)(const char*, const char*) = NULL;
-static int   (*pDobbyHook)(void*, void*, void**) = NULL;
+static void*   (*pDobbySymbolResolver)(const char*, const char*) = NULL;
+static int     (*pDobbyHook)(void*, void*, void**) = NULL;
 
 // ============================================================
 // AUDIO ENGINE
@@ -51,23 +58,17 @@ static int   (*pDobbyHook)(void*, void*, void**) = NULL;
 static inline float hann(int i, int n) {
     return 0.5f * (1.0f - cosf(6.28318f * i / (n - 1)));
 }
-
 static inline short ring_get(int pos) {
     return g_vfx.ring[pos & (RING_SIZE - 1)];
 }
-
 static inline short clamp16(float v) {
     if (v >  32767.0f) return  32767;
     if (v < -32768.0f) return -32768;
     return (short)v;
 }
 
-// ============================================================
-// DSP CALLBACK
-// ============================================================
 static void dspCallback(HDSP dsp, DWORD channel, void* buf, DWORD len, void* user) {
     if (!g_vfx.enabled || g_vfx.pitch_factor == 1.0f) return;
-
     short* s16 = (short*)buf;
     int n = (int)(len / 2);
     if (n <= 0 || n > MAX_SAMPLES) return;
@@ -87,12 +88,10 @@ static void dspCallback(HDSP dsp, DWORD channel, void* buf, DWORD len, void* use
         int   p0   = (int)pos;
         float frac = pos - p0;
         float val  = ring_get(p0) * (1.0f - frac) + ring_get(p0 + 1) * frac;
-
         if (i < OVERLAP_SIZE) {
             float w = hann(i, OVERLAP_SIZE * 2);
             val = val * w + g_vfx.overlap[i] * (1.0f - w);
         }
-
         s16[i] = clamp16(val);
         pos += factor;
     }
@@ -104,13 +103,9 @@ static void dspCallback(HDSP dsp, DWORD channel, void* buf, DWORD len, void* use
         g_vfx.overlap[i] = ring_get(p0) * (1.0f - frac) + ring_get(p0 + 1) * frac;
         sp += factor;
     }
-
     g_vfx.synth_pos = pos;
 }
 
-// ============================================================
-// HOOK: BASS_RecordStart
-// ============================================================
 static HRECORD hook_BASSRecordStart(DWORD freq, DWORD chans, DWORD flags, void* proc, void* user) {
     HRECORD handle = orig_BASSRecordStart(freq, chans, flags, proc, user);
     g_recHandle = handle;
@@ -119,6 +114,9 @@ static HRECORD hook_BASSRecordStart(DWORD freq, DWORD chans, DWORD flags, void* 
     g_vfx.pitch_factor = 1.0f;
     g_vfx.sample_rate  = (int)freq;
     g_vfx.channels     = (int)chans;
+
+    LOGI("BASS_RecordStart hooked! handle=%u freq=%u", handle, freq);
+    logfile("[VFX] BASS_RecordStart hooked!");
 
     if (pBASSChannelSetDSP)
         g_dspHandle = pBASSChannelSetDSP(handle, dspCallback, NULL, 1);
@@ -133,35 +131,67 @@ void  vc_set_pitch(float factor) {
     if (factor < 0.25f) factor = 0.25f;
     if (factor > 4.0f)  factor = 4.0f;
     g_vfx.pitch_factor = factor;
+    LOGI("pitch set to %.2f", factor);
 }
-void  vc_enable(void)        { g_vfx.enabled = 1; }
-void  vc_disable(void)       { g_vfx.enabled = 0; }
-int   vc_is_enabled(void)    { return g_vfx.enabled; }
-float vc_get_pitch(void)     { return g_vfx.pitch_factor; }
+void  vc_enable(void)     { g_vfx.enabled = 1; LOGI("enabled"); }
+void  vc_disable(void)    { g_vfx.enabled = 0; LOGI("disabled"); }
+int   vc_is_enabled(void) { return g_vfx.enabled; }
+float vc_get_pitch(void)  { return g_vfx.pitch_factor; }
 
 // ============================================================
 // AML ENTRY POINT
 // ============================================================
 void OnModLoad(void) {
+    // Hapus log lama
+    remove(LOGFILE);
+    logfile("[VFX] OnModLoad dipanggil!");
+    LOGI("OnModLoad called");
+
     void* hDobby = dlopen("libdobby.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!hDobby) return;
+    if (!hDobby) {
+        logfile("[VFX] ERROR: libdobby.so tidak bisa dibuka");
+        LOGE("dlopen libdobby.so failed: %s", dlerror());
+        return;
+    }
+    logfile("[VFX] libdobby.so OK");
 
     pDobbySymbolResolver = (void*(*)(const char*, const char*))dlsym(hDobby, "DobbySymbolResolver");
     pDobbyHook           = (int(*)(void*, void*, void**))dlsym(hDobby, "DobbyHook");
-    if (!pDobbySymbolResolver || !pDobbyHook) return;
+    if (!pDobbySymbolResolver || !pDobbyHook) {
+        logfile("[VFX] ERROR: Dobby symbol tidak ditemukan");
+        return;
+    }
+    logfile("[VFX] Dobby symbols OK");
 
     void* hBASS = dlopen("libBASS.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!hBASS) return;
+    if (!hBASS) {
+        logfile("[VFX] ERROR: libBASS.so tidak bisa dibuka");
+        LOGE("dlopen libBASS.so failed: %s", dlerror());
+        return;
+    }
+    logfile("[VFX] libBASS.so OK");
 
     pBASSChannelSetDSP    = (HDSP(*)(HRECORD, DSPPROC, void*, int))dlsym(hBASS, "BASS_ChannelSetDSP");
     pBASSChannelRemoveDSP = (int(*)(HRECORD, HDSP))dlsym(hBASS, "BASS_ChannelRemoveDSP");
 
     void* addr = pDobbySymbolResolver("libBASS.so", "BASS_RecordStart");
-    if (!addr) return;
+    if (!addr) {
+        logfile("[VFX] ERROR: BASS_RecordStart tidak ditemukan");
+        return;
+    }
+    logfile("[VFX] BASS_RecordStart addr ditemukan");
 
-    pDobbyHook(addr, (void*)hook_BASSRecordStart, (void**)&orig_BASSRecordStart);
+    int r = pDobbyHook(addr, (void*)hook_BASSRecordStart, (void**)&orig_BASSRecordStart);
+    if (r != 0) {
+        logfile("[VFX] ERROR: DobbyHook gagal");
+        return;
+    }
+    logfile("[VFX] Hook BASS_RecordStart OK!");
 
     memset(&g_vfx, 0, sizeof(VoiceFX));
     g_vfx.pitch_factor = 1.0f;
     g_vfx.enabled      = 0;
+
+    logfile("[VFX] OnModLoad selesai - siap!");
+    LOGI("OnModLoad done");
 }
