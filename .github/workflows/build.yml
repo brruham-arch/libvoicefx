@@ -1,0 +1,35 @@
+name: Build libvoicefx.so
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+          add-to-path: true
+
+      - name: Build
+        run: |
+          ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk NDK_APPLICATION_MK=jni/Application.mk -j4
+
+      - name: Upload armeabi-v7a
+        uses: actions/upload-artifact@v4
+        with:
+          name: libvoicefx-armeabi-v7a
+          path: libs/armeabi-v7a/libvoicefx.so
+
+      - name: Upload arm64-v8a
+        uses: actions/upload-artifact@v4
+        with:
+          name: libvoicefx-arm64-v8a
+          path: libs/arm64-v8a/libvoicefx.so
