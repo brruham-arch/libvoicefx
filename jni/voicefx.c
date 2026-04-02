@@ -1,8 +1,3 @@
-/**
- * voicefx.c - AML Mod Voice Changer
- * ENTRY POINT: OnModLoad
- */
-
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
@@ -13,23 +8,12 @@
 
 #define LOG_TAG "libvoicefx"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// ============================================================
-// DEBUG - Write to Log File
-// ============================================================
-static void printDebug(const char* msg) {
-    LOGI("%s", msg);
+static void writeLog(const char* msg) {
     FILE* f = fopen("/sdcard/voicefx_log.txt", "a");
-    if (f) {
-        fprintf(f, "%s\n", msg);
-        fclose(f);
-    }
+    if (f) { fprintf(f, "%s\n", msg); fclose(f); }
 }
 
-// ============================================================
-// TYPEDEFS
-// ============================================================
 typedef unsigned int DWORD;
 typedef unsigned int HRECORD;
 typedef unsigned int HDSP;
@@ -49,9 +33,6 @@ static struct {
     float  ovl[256];
 } g_vfx = {1.0f, 0, {0}, 0, 0, {0}};
 
-// ============================================================
-// AUDIO
-// ============================================================
 static inline float hann(int i, int n) {
     return 0.5f * (1.0f - cosf(6.283185307f * i / (n - 1)));
 }
@@ -84,64 +65,67 @@ static void dspCallback(HDSP dsp, DWORD chan, void* buf, DWORD len, void* u) {
 
 static HRECORD hook_BASS_RecordStart(DWORD freq, DWORD chans, DWORD flags, void* proc, void* user) {
     HRECORD h = orig_BASS_RecordStart(freq, chans, flags, proc, user);
-    printDebug("[VFX] BASS_RecordStart HOOKED");
+    writeLog("[VFX] BASS Hooked");
     pBASS_ChannelSetDSP(h, dspCallback, NULL, 1);
     return h;
 }
 
-// ============================================================
-// API
-// ============================================================
 void vc_set_pitch(float f) {
     if (f < 0.25f) f = 0.25f;
     if (f > 4.0f)  f = 4.0f;
     g_vfx.pitch = f;
 }
-void vc_enable(void)  { g_vfx.enabled = 1; printDebug("[VFX] ENABLED"); }
-void vc_disable(void) { g_vfx.enabled = 0; printDebug("[VFX] DISABLED"); }
+void vc_enable(void)  { g_vfx.enabled = 1; }
+void vc_disable(void) { g_vfx.enabled = 0; }
 int  vc_is_enabled(void) { return g_vfx.enabled; }
 float vc_get_pitch(void) { return g_vfx.pitch; }
 
 // ============================================================
-// ENTRY POINT - WAJIB NAMA OnModLoad
+// KODE INTI YANG DIJALANKAN
 // ============================================================
-void OnModLoad(void) {
+void Init_Mod(void) {
     remove("/sdcard/voicefx_log.txt");
-    printDebug("=========================");
-    printDebug("   LIB VOICEFX LOADED   ");
-    printDebug("=========================");
+    writeLog("=========================");
+    writeLog("   LIB VOICEFX START    ");
+    writeLog("=========================");
 
     void* dobj = dlopen("libdobby.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!dobj) {
-        printDebug("[X] libdobby.so NOT FOUND");
-        return;
-    }
-    printDebug("[✓] libdobby.so OK");
+    if (!dobj) { writeLog("ERR: libdobby.so"); return; }
+    writeLog("OK: libdobby.so");
 
     pDobbySymbolResolver = (void*(*)(const char*,const char*))dlsym(dobj, "DobbySymbolResolver");
     pDobbyHook           = (int(*)(void*,void*,void**))dlsym(dobj, "DobbyHook");
 
     void* bobj = dlopen("libBASS.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!bobj) {
-        printDebug("[X] libBASS.so NOT FOUND");
-        return;
-    }
-    printDebug("[✓] libBASS.so OK");
+    if (!bobj) { writeLog("ERR: libBASS.so"); return; }
+    writeLog("OK: libBASS.so");
 
     pBASS_ChannelSetDSP = (HDSP(*)(HRECORD,DSPPROC,void*,int))dlsym(bobj, "BASS_ChannelSetDSP");
 
     void* addr = pDobbySymbolResolver("libBASS.so", "BASS_RecordStart");
-    if (!addr) {
-        printDebug("[X] BASS_RecordStart NOT FOUND");
-        return;
-    }
-    printDebug("[✓] Symbol BASS_RecordStart FOUND");
+    if (!addr) { writeLog("ERR: Symbol not found"); return; }
 
-    int ret = pDobbyHook(addr, (void*)hook_BASS_RecordStart, (void**)&orig_BASS_RecordStart);
-    if (ret != 0) {
-        printDebug("[X] HOOK FAILED");
-        return;
-    }
-    printDebug("[✓] HOOK SUCCESS! READY");
-    printDebug("=========================");
+    pDobbyHook(addr, (void*)hook_BASS_RecordStart, (void**)&orig_BASS_RecordStart);
+    writeLog("HOOK SUCCESS!");
+}
+
+// ============================================================
+// SEMUA JENIS ENTRY POINT - AGAR PASTI KETANGKAP
+// ============================================================
+
+// Cara 1: Constructor attribute
+__attribute__((constructor)) void init_ctor() {
+    Init_Mod();
+}
+
+// Cara 2: OnModLoad (standar AML)
+void OnModLoad() {
+    Init_Mod();
+}
+
+// Cara 3: JNI_OnLoad
+#include <jni.h>
+jint JNI_OnLoad(JavaVM* vm, void* reserved) {
+    Init_Mod();
+    return JNI_VERSION_1_6;
 }
